@@ -22,10 +22,11 @@
 #include <fstream>
 #include "dirent.h"
 #include "SendFilestruct.h"
+#include "Winsock_Functions.h"
 #include<io.h>
 #include<stdio.h>
 #include <stdio.h>
-
+#include<iomanip>
 
 
 
@@ -37,10 +38,10 @@
 
 using namespace std;
 
-#define EGM22 // #here 
+#define EGM1 // #here 
 
 int pausebutton(); // To hold on a button push 
-int initclient(void);//Initiates the client
+
 
 struct0_T  icd_sense_st;
 struct1_T  icd_sense_par;
@@ -101,16 +102,22 @@ char flag = 0;
 
 
 //variables for socket receiving
-string in_file_name;
+
 int receivesize;
 int log_file_num = 1;
 char incoming[200000];
-int recind = 0;
+
 
 //DAQ handles and variables
 int32       error = 0;
 TaskHandle  taskHandle = 0;
 TaskHandle  taskHandle2 = 0;
+
+
+//Automation variables 
+char start_ALG = 0;
+
+
 
 //functions for the DAQ
 #define DAQmxErrChk(functionCall) if( DAQmxFailed(error=(functionCall)) ) goto Error; else
@@ -129,7 +136,10 @@ int32 CVICALLBACK DoneCallback(TaskHandle taskHandle, int32 status, void *callba
 
 //thread for the socket
 int SOCKthread() {
+	
 
+
+	char socketerror;
 	struct4file.linecount = 0;
 
 	struct4file.counter = 0;
@@ -139,13 +149,14 @@ int SOCKthread() {
 	struct4file.bufpoint = struct4file.buffer;
 
 	//initiate client
-	initclient();
-	//sending files to server
-	while (1) {
+	socketerror = initclient(&wsa, &s, &server);
+	if (socketerror == 1) return 0;
 
+	//sending files to server, and receiving log files
+	while (1) {
+		//DAQmxStopTask(taskHandle);
 		ifstream inFilemaster;
 
-		ifstream inFiletext;
 
 		//enter the name of the master file
 
@@ -173,157 +184,22 @@ int SOCKthread() {
 
 			for (struct4file.line; std::getline(inFilemaster, struct4file.line);) {
 
-				struct4file.linecount = 0;
-
-				ifstream checkfile;
-
-				std::ifstream inFiletext;
-
+				DAQmxStopTask(taskHandle);
+				//get the EGM text file name
 				std::istringstream in2(struct4file.line);
 
 				in2 >> struct4file.textfilename;
 
-				inFiletext.open(struct4file.textfilename.c_str());
-
-				if (!inFiletext) {
-
-					std::cout << "Unable to open file: " << struct4file.textfilename << std::endl;
-
-					return 0;
-
-				}
-
-				cout << "sending " << struct4file.line << endl;
-
-				//loop to count the lines in the text file
-
-				checkfile.open(struct4file.textfilename.c_str());
-
-				for (struct4file.line3; std::getline(checkfile, struct4file.line3);) {
-
-					struct4file.linecount++;
-
-				}
-
-				//send start message
-
-				struct4file.message = "start";
-
-				send(s, struct4file.message, strlen(struct4file.message), 0);
-
-				strcpy(struct4file.filenamebuf, struct4file.textfilename.c_str());
-
-				//receive confirmation then send file name
-
-				struct4file.receivesize = recv(s, struct4file.buffer, 1000, 0);
-
-				send(s, struct4file.filenamebuf, strlen(struct4file.filenamebuf), 0);
-
-				//send lines from file
-
-				for (struct4file.line2; std::getline(inFiletext, struct4file.line2);) {
-
-				
-
-					struct4file.counter++;
-
-					struct4file.line2.copy(struct4file.bufpoint, struct4file.line2.length(), 0);
-
-					struct4file.delimind = static_cast<int>(struct4file.line2.length());
-
-					//deliminate the line
-
-					struct4file.bufpoint[struct4file.delimind] = 0;
-
-					//new pointer
-
-					struct4file.bufpoint = struct4file.bufpoint + (struct4file.delimind + 1);
-
-					if ((struct4file.bufpoint - struct4file.buffer) >= 147000 || struct4file.counter == struct4file.linecount) {
-
-						send(s, struct4file.buffer, 147000, 0);
-
-						struct4file.bufpoint = struct4file.buffer;
-
-						//handshake
-
-						struct4file.receivesize = recv(s, struct4file.buffer, 1000, 0);
-
-						//if end of file, say so
-
-						if (struct4file.counter == struct4file.linecount) {
-
-							struct4file.message = "This program is done sending";
-
-							send(s, struct4file.message, strlen(struct4file.message), 0);
-
-						}
-
-						else {
-
-							struct4file.message = "c";
-
-							send(s, struct4file.message, strlen(struct4file.message), 0);
-
-						}
-
-					}
-
-				}
-				//reset counters and close streams
-				struct4file.counter = 0;
-
-				inFiletext.close();
-
-				checkfile.close();
-
-				inFiletext.clear();
-
-				checkfile.clear();
+				//function to send the EGM text file to PC2
+				 send_EGM_txt(&s, &struct4file);
 
 				//wait to move on to the next file
 				cout << "waiting to send next file" << endl;
 				
-
-
-				//receive two files, one for ICD one for Algorithm
-				for (char rec_files = 1; rec_files < 3; rec_files++) {
-					//create log file names
-					if (rec_files == 1) in_file_name = "log_file_ICD" + to_string(log_file_num)+".txt";
-					if(rec_files==2) in_file_name = "log_file_Open_ICD" + to_string(log_file_num)+".txt";
-					//open output stream for received data, also create the file 
-					ofstream file_receive(in_file_name);
-					
-					//receive log file from other computer 
-					while (1) {
-						//receive main data
-						receivesize = recv(s, incoming, 148000, 0);
-
-						while (recind < receivesize) {
-							//convert buffer into string
-							string str(&incoming[recind]);
-							
-							//stream string into the output file
-							file_receive << str<<endl;
-							while (incoming[recind] != 0) recind++;
-							recind++;
-
-						}
-						recind = 0;
-						//handshake
-						send(s, struct4file.message, strlen(struct4file.message), 0);
-						//receive message on file status
-						receivesize = recv(s, incoming, 1000, 0);
-						incoming[receivesize] = 0;
-						string str(incoming);
-						if (str == "This program is done sending") break;
-					}
-					//close output stream so a new file can be imported 
-					file_receive.close();
-				}
-
-				log_file_num++;
-				
+				//function that receives one log files from PC2
+				log_file_num = rec_log(&s, log_file_num, incoming,&struct4file);
+				//start the DAQ fir receiving
+				DAQmxStartTask(taskHandle);
 				//wait for final message from other PC to move on
 				struct4file.receivesize = recv(s, struct4file.buffer, 1000, 0);
 			}
@@ -335,10 +211,12 @@ int SOCKthread() {
 			struct4file.message = "done";
 
 			send(s, struct4file.message, strlen(struct4file.message), 0);
+
+			//function to create test file
+			create_test(log_file_num);
+
 			flag = 1;
-
 			break;
-
 		}
 
 	}
@@ -540,31 +418,31 @@ int DAQ1_thread() {
 	/*********************************************/
 	
 
-
+	//initiate the DAQ, sample once every 1ms
 	DAQmxCreateTask("ACQUIRE", &taskHandle);
 	DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai0", "", DAQmx_Val_RSE, -10.0, 10.0, DAQmx_Val_Volts, NULL);
 	DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai1", "", DAQmx_Val_RSE, -10.0, 10.0, DAQmx_Val_Volts, NULL);
 	DAQmxCreateAIVoltageChan(taskHandle, "Dev1/ai2", "", DAQmx_Val_RSE, -10.0, 10.0, DAQmx_Val_Volts, NULL);
 	DAQmxCfgSampClkTiming(taskHandle, "", 1000.0, DAQmx_Val_Rising, DAQmx_Val_ContSamps, 1);
 	DAQmxRegisterEveryNSamplesEvent(taskHandle, DAQmx_Val_Acquired_Into_Buffer, 1, 0, EveryNCallback, NULL);
-	DAQmxCreateAOVoltageChan(taskHandle, "Dev1/ao3", "", -10.0, 10.0, DAQmx_Val_Volts, "");
+	DAQmxCreateAOVoltageChan(taskHandle, "Dev1/ao0", "", -10.0, 10.0, DAQmx_Val_Volts, "");
 	DAQmxRegisterDoneEvent(taskHandle, 0, DoneCallback, NULL);
 
 	/*********************************************/
 	// DAQmx Start Code
 	/*********************************************/
-	DAQmxStartTask(taskHandle);
+
 	
 
 	while (header_written == false);
 	write_header = false;
 
-	while (1) {
+	while (flag==0) {
 		while (new_data_event == false);
 		// new data event is true here 
 
 		// This part here is useful to verify acquisition
-		// writeOut << input_data_reading_idx << '\t' << input_data_buffer_A[input_data_reading_idx] << '\t' << input_data_buffer_V[input_data_reading_idx] << '\t' << input_data_buffer_S[input_data_reading_idx] << endl;
+		//writeOut << input_data_reading_idx << '\t' << input_data_buffer_A[input_data_reading_idx] << '\t' << input_data_buffer_V[input_data_reading_idx] << '\t' << input_data_buffer_S[input_data_reading_idx] << endl;
 
 	//	printf("r idx %i\t d1 %f\t d2 %f\t d3 %f \n", input_data_reading_idx, input_data_buffer_A[input_data_reading_idx], input_data_buffer_V[input_data_reading_idx], input_data_buffer_S[input_data_reading_idx]);
 		input_signals_sensing[0] = input_data_buffer_V[input_data_reading_idx];
@@ -578,19 +456,10 @@ int DAQ1_thread() {
 		ICD_sensing_BS(&icd_sense_st, &icd_sense_par, input_signals_sensing, &V_input, &A_input, &A_BlanckP); //Sensing
 		ICD_BS(&icd_st, &icd_par, A_input, V_input, input_data_buffer_S[input_data_reading_idx], &theraphy_sign, &inhibit_sign); // Detection
 
-		writeOut << input_data_reading_idx << '\t' << input_data_buffer_A[input_data_reading_idx] << '\t' << input_data_buffer_V[input_data_reading_idx] << '\t' << input_data_buffer_S[input_data_reading_idx] << '\t' <<
-			V_input << '\t' << A_input << '\t' << theraphy_sign << '\t' << inhibit_sign << endl;
+		writeOut<<input_data_buffer_A[input_data_reading_idx] << endl;
 
 		data_written = true;
-		if (shock == 0) {
-			data[0] = 0;
-			DAQmxWriteAnalogF64(taskHandle, 1, 1, 10.0, DAQmx_Val_GroupByChannel, data, NULL, NULL);
-
-		}
-		else {
-			data[0] = 2;
-			DAQmxWriteAnalogF64(taskHandle, 1, 1, 10.0, DAQmx_Val_GroupByChannel, data, NULL, NULL);
-		}
+	
 	
 	}
 
@@ -611,7 +480,7 @@ int main() {
 		cout << "Succefully opened directory, loading initialization file" << endl;
 		//load initialization file
 		filename = "../codegenTestFiles/codegen_sensing_test_BS";
-		filename += ".init22"; // Load Parameters of Sensing for signal 1 #here
+		filename += ".init1"; // Load Parameters of Sensing for signal 1 #here
 		cout << filename << endl;
 		inFile.open(filename.c_str());
 		if (!inFile) {
@@ -665,52 +534,10 @@ int main() {
 
 	std::thread t1(DAQ1_thread);
 	std::thread t2(SOCKthread);
-	t2.join();
+
 	t1.join();
+	t2.join();
 
-
-
-	//Engine *m_pEngine;
-	//m_pEngine = engOpen("null");
-
-	//double SinArray[arraysize];
-	//double CosArray[arraysize];
-	//double Degrees[arraysize];
-
-	//for (int iii = 0; iii < arraysize; iii++) {
-	//	Degrees[iii] = iii;
-	//	SinArray[iii] = sin(iii*degTorad);
-	//	CosArray[iii] = cos(iii*degTorad);
-
-	//}
-
-	//mxArray* dSIN = mxCreateDoubleMatrix(1, 1, mxREAL);
-	//mxArray* dCOS = mxCreateDoubleMatrix(1, 1, mxREAL);
-	//mxArray* dDEG = mxCreateDoubleMatrix(1, 1, mxREAL);
-
-	//double* pSIN = mxGetPr(dSIN);
-	//double* pCOS = mxGetPr(dCOS);
-	//double* pDEG = mxGetPr(dDEG);
-
-	// COMMENTED FOR CONFLICTS ON THE SAME ENGINE RUNNING
-	/*for (int iii = 0; iii < arraysize; iii++) {
-
-		if (iii % 18 == 1) {
-		*pSIN = SinArray[iii];
-		*pCOS = CosArray[iii];
-		*pDEG = Degrees[iii];
-
-		engPutVariable(m_pEngine, "dSIN", dSIN);
-		engPutVariable(m_pEngine, "dCOS", dCOS);
-		engPutVariable(m_pEngine, "dDEG", dDEG);
-		engEvalString(m_pEngine, "subplot(1, 2, 1)");
-		engEvalString(m_pEngine, "scatter(dDEG,dSIN,'r','filled'),set(gca,'YLim',[-1.1 1.1],'XLim',[0 5000]), hold on,");
-		engEvalString(m_pEngine, "subplot(1, 2, 2)");
-		engEvalString(m_pEngine, "scatter(dDEG,dCOS,'b','filled'),set(gca,'YLim',[-1.1 1.1],'XLim',[0 5000]), hold on,");
-		}
-	}
-
-	engEvalString(m_pEngine, "close;");*/
 
 	while (flag==0);
 
@@ -719,6 +546,7 @@ int main() {
 
 	DAQmxClearTask(taskHandle);
 
+	
 
 
 	return 0;
@@ -726,6 +554,7 @@ int main() {
 
 int32 CVICALLBACK EveryNCallback(TaskHandle taskHandle, int32 everyNsamplesEventType, uInt32 nSamples, void *callbackData)
 {
+	
 	int32       error = 0;
 	char        errBuff[2048] = { '\0' };
 	static int  totalRead = 0;
@@ -733,14 +562,13 @@ int32 CVICALLBACK EveryNCallback(TaskHandle taskHandle, int32 everyNsamplesEvent
 	float64     puppa[1000];
 
 	if (write_header == true) {
-		filename = "output.out22e"; //#here
-		//filename += ".out"; //here
+		filename = "output1.txt"; //#here
+		
 
 		writeOut.open(filename.c_str(), ios_base::out);
-		writeOut.setf(ios::fixed, ios::floatfield);
-		writeOut.precision(6);
-		writeOut.flush();
-		writeOut << "Idx  \t ARAW \t VRAW \t SRAW \t V input \t A input \t Theraphy \t A Inhibit \n";
+		writeOut<< std::fixed;
+		writeOut << std::setprecision(6);
+		//writeOut << "Idx  \t ARAW \t VRAW \t SRAW \t V input \t A input \t Theraphy \t A Inhibit \n";
 		header_written = true;
 	}
 
@@ -750,15 +578,19 @@ int32 CVICALLBACK EveryNCallback(TaskHandle taskHandle, int32 everyNsamplesEvent
 	DAQmxReadAnalogF64(taskHandle, 1, 10.0, DAQmx_Val_GroupByScanNumber, puppa, 3, &read, NULL);
 	if (read > 0) {
 		new_data_event =true;
+		//Shift the voltages down to -1-1V
+		puppa[0]--;
+		puppa[1]--;
+	    puppa[2]--;
 		// To print data before being passes / Testintg 
 		//printf("d1 %f\t d2 %f\t d3 %f\n", puppa[0], puppa[1], puppa[2]);
-	    //writeOut << input_data_buffer_idx << '\t' << puppa[0] << '\t' << puppa[1] << '\t' << puppa[2] << endl;
+	   // writeOut << input_data_buffer_idx << "    " << puppa[0] <<"    " << puppa[1] << "    " << puppa[2] << '\n';
 
 		input_data_buffer_A[input_data_buffer_idx] = puppa[0];  
 		input_data_buffer_V[input_data_buffer_idx] = puppa[1];  
 		input_data_buffer_S[input_data_buffer_idx] = puppa[2];  
 		input_data_buffer_idx++;
-		if (input_data_buffer_idx == 10000) input_data_buffer_idx = 0;
+		if (input_data_buffer_idx == 100000) input_data_buffer_idx = 0;
 		if (puppa[0] > 1) shock = 0; 
 		else shock = 1;
 
@@ -788,62 +620,4 @@ int pausebutton(){
 	cout << "Press a botton to continue... " << endl;
 	while (!_kbhit());
 	return(1);
-}
-
-
-int initclient() {
-
-	//Initialize Winsock
-	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
-
-	{
-
-		printf("Failed. Error Code : %d", WSAGetLastError());
-
-		return 1;
-
-	}
-
-
-
-
-
-	//Create a socket
-
-	if ((s = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET)
-
-	{
-
-		printf("Could not create socket : %d", WSAGetLastError());
-
-	}
-
-
-
-
-
-	//setsockopt(s, IPPROTO_TCP, TCP_NODELAY, 0, 1);
-
-	//Remote server's IP address
-	server.sin_addr.s_addr = inet_addr(/*"158.130.109.243"*/ "127.0.0.1");
-	//Set adress family to IP version 4
-	server.sin_family = AF_INET;
-	//Set port number
-	server.sin_port = htons(8888);
-
-	//Connect to remote server
-
-	if (connect(s, (struct sockaddr *)&server, sizeof(server)) < 0)
-
-	{
-
-		puts("connect error");
-
-		return 1;
-
-	}
-
-	cout << "Connection made" << endl;
-
-
 }
